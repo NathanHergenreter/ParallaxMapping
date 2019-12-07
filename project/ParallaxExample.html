@@ -1,0 +1,290 @@
+<html>
+	<head>
+		<title>Parallax Mapping</title>
+        <link rel="stylesheet" type="text/css" href="/project/ParallaxExample.css" />
+	</head>
+	<body>
+
+		<canvas id="theCanvas" class = "theCanvas" width="640" height="360">
+    Please use a browser that supports "canvas"
+	</canvas>
+
+	<hr>
+	
+	<p>
+	<b> Mode: </b>
+	<select id = "parallaxMode" size = "1" onchange = "changeMode()">
+		<option value = "none" selected> No Parallax Mapping </option>
+		<option value = "basic"> Basic Parallax Mapping </option>
+		<option value = "steep"> Steep Parallax Mapping </option>
+		<option value = "occlusion"> Parallax Occlusion Mapping </option>
+		<option value = "relief"> Relief Mapping </option>
+	</select>
+
+	<b> Texture: </b>
+	<select id = "textureSet" size = "1" onchange = "changeTextures()">
+		<option value = 0 selected> Bricks </option>
+		<option value = 1> Toybox </option>
+		<option value = 2> Landscape </option>
+	</select>
+	</p>
+
+	<p>
+	<b> Min Layers: </b> 
+	<input id = "minLayers" type = "range"     min = "1" max = "100" value = "8" oninput = "changeMinLayers(this.value)">
+	<input id = "minLayersNum" type = "number" min = "1" max = "100" value = "8" oninput = "changeMinLayers(this.value)">
+
+	<b> Max Layers: </b> 
+	<input id = "maxLayers" type = "range"     min = "1" max = "100" value = "32" oninput = "changeMaxLayers(this.value)">
+	<input id = "maxLayersNum" type = "number" min = "1" max = "100" value = "32" oninput = "changeMaxLayers(this.value)">
+	</p>
+
+	<p>
+	<b> Camera Controls:</b>
+	<ul style="list-style:none;">
+		<li>w, a, s, d - move forward, left, back, right
+		<li>r, f - move up, down
+		<li>I, J, K, L - orbit left, right, up, down
+		<li>W - decrease fov
+		<li>S - increase fov
+	</ul>
+
+	<script id="vertexShader" type="x-shader/x-vertex">
+		precision mediump float;
+
+		uniform vec4 lightPosition;
+
+		attribute vec3 tangent;
+
+		varying vec3 fL;
+		varying vec3 fN;
+		varying vec3 fV;
+		varying vec3 tangentViewPos;
+		varying vec3 tangentFragPos;
+		varying vec2 fTexCoords;
+		varying mat3 TBN;
+
+		mat3 transposeCustom(mat3 matrix);
+
+		void main()
+		{
+			// convert position to eye coords
+			//vec4 positionEye = viewMatrix * modelMatrix * vec4(position, 1.0);
+			vec4 positionEye = modelViewMatrix * vec4(position, 1.0);
+		  
+			// convert light position to eye coords
+			vec4 lightEye = viewMatrix * lightPosition;
+		  
+			fL = (lightEye - positionEye).xyz;
+			fN = normalMatrix * normal;
+			fV = normalize(-(positionEye).xyz);
+			
+			// TBN Matrix
+			vec3 T   = normalize((modelViewMatrix * vec4(tangent, 0.0)).xyz);
+			vec3 B   = cross(fN, T);
+			TBN = transposeCustom(mat3(T, B, fN));
+			
+			//tangentLightPos = TBN * lightPosition.xyz;
+			tangentViewPos  = TBN * cameraPosition;
+			tangentFragPos  = TBN * vec3(modelMatrix * vec4(position, 1.0));
+		  
+  			fTexCoords = uv;
+			gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(position, 1.0);
+		}
+		
+		mat3 transposeCustom(mat3 matrix) 
+		{
+			vec3 i0 = matrix[0];
+			vec3 i1 = matrix[1];
+			vec3 i2 = matrix[2];
+		
+			mat3 outMatrix = mat3(
+				vec3(i0.x, i1.x, i2.x),
+				vec3(i0.y, i1.y, i2.y),
+				vec3(i0.z, i1.z, i2.z)
+			);
+		
+			return outMatrix;
+		}
+	</script>
+		
+	<script id="fragmentShader" type="x-shader/x-fragment">
+		precision mediump float;
+
+		uniform mat3 materialProperties;
+		uniform mat3 lightProperties;
+		uniform float shininess;
+
+		uniform sampler2D diffuseMap;
+		uniform sampler2D normalMap;
+		uniform sampler2D depthMap;
+
+		uniform float minLayers;
+		uniform float maxLayers;
+
+		varying vec3 fL;
+		varying vec3 fN;
+		varying vec3 fV;
+		varying vec3 tangentViewPos;
+		varying vec3 tangentFragPos;
+		varying vec2 fTexCoords;
+		varying mat3 TBN;
+
+		vec2 ParallaxMapping(vec2 texCoords, vec3 viewDir);
+
+		void main()
+		{
+			// offset texture coordinates with Parallax Mapping
+			vec3 viewDir   = normalize(tangentViewPos - tangentFragPos);
+			vec2 texCoords = ParallaxMapping(fTexCoords,  viewDir);
+
+			if(texCoords.x > 1.0 || texCoords.y > 1.0 || texCoords.x < 0.0 || texCoords.y < 0.0)
+    			discard;
+
+			// normalize after interpolating
+    		// transform normal vector to range [-1,1]
+			vec3 N = texture2D(normalMap, texCoords).rgb;
+			N = normalize(N * 2.0 - 1.0);   
+			N = normalize(TBN * N);
+			
+			vec3 L = normalize(fL);
+			vec3 V = normalize(fV);
+		  
+			// reflected vector
+			vec3 R = reflect(-L, N);
+		  
+			// get the columns out of the light and material properties.  We keep the surface
+			// properties separate, so we can mess with them using the sampled texture value
+			vec4 ambientSurface = vec4(materialProperties[0], 1.0);
+			vec4 diffuseSurface = vec4(materialProperties[1], 1.0);
+			vec4 specularSurface = vec4(materialProperties[2], 1.0);
+		  
+			vec4 ambientLight = vec4(lightProperties[0], 1.0);
+			vec4 diffuseLight = vec4(lightProperties[1], 1.0);
+			vec4 specularLight = vec4(lightProperties[2], 1.0);
+		  
+			// sample from the texture at interpolated texture coordinate
+			vec4 color = texture2D(diffuseMap, texCoords);
+		  
+			// (1) use the value directly as the surface color and ignore the material properties
+			ambientSurface = color;
+			diffuseSurface = color;
+		  
+			// lighting factors as usual
+		  
+			// Lambert's law, clamp negative values to zero
+			float diffuseFactor = max(0.0, dot(L, N));
+		  
+			// specular factor from Phong reflection model
+			float specularFactor = pow(max(0.0, dot(V, R)), shininess);
+		  
+			// add the components together, note that vec4 * vec4 is componentwise multiplication,
+			// not a dot product
+			vec4 ambient = ambientLight * ambientSurface;
+			vec4 diffuse = diffuseFactor * diffuseLight * diffuseSurface;
+			vec4 specular = specularFactor * specularLight * specularSurface;
+			gl_FragColor = ambient + diffuse + specular;
+			gl_FragColor.a = 1.0;
+		}
+
+		vec2 ParallaxMapping(vec2 texCoords, vec3 viewDir)
+		{ 
+			#ifdef NO_PARALLAX
+				return texCoords;
+			#endif
+
+			const float height_scale = 0.1;
+
+			#ifdef USE_BASIC_PARALLAX
+				float height =  texture2D(depthMap, texCoords).r;
+				vec2 p = viewDir.xy / (viewDir.z + 0.42) * (height * height_scale);
+				return texCoords - p;
+
+			#else
+				// number of depth layers
+				float numLayers = mix(maxLayers, minLayers, abs(dot(vec3(0.0, 0.0, 1.0), viewDir)));  
+
+				// calculate the size of each layer
+				float layerDepth = 1.0 / numLayers;
+
+				// depth of current layer
+				float currentLayerDepth = 0.0;
+
+				// the amount to shift the texture coordinates per layer (from vector P)
+				vec2 P = viewDir.xy * height_scale; 
+				vec2 deltaTexCoords = P / numLayers;
+
+				// get initial values
+				vec2  currentTexCoords     = texCoords;
+				float currentDepthMapValue = texture2D(depthMap, currentTexCoords).r;
+				
+				const int max_steps = 100;
+				for(int i = 0; i < max_steps; i++)
+				{
+					if(currentLayerDepth >= currentDepthMapValue || i >= int(numLayers))
+						break;
+				
+					// shift texture coordinates along direction of P
+					currentTexCoords -= deltaTexCoords;
+
+					// get depthmap value at current texture coordinates
+					currentDepthMapValue = texture2D(depthMap, currentTexCoords).r;  
+
+					// get depth of next layer
+					currentLayerDepth += layerDepth;  
+				}
+
+				#ifdef USE_STEEP_PARALLAX
+					return currentTexCoords;
+
+				#elif defined(USE_OCCLUSION_PARALLAX)
+					// get texture coordinates before collision (reverse operations)
+					vec2 prevTexCoords = currentTexCoords + deltaTexCoords;
+					
+					// get depth after and before collision for linear interpolation
+					float afterDepth  = currentDepthMapValue - currentLayerDepth;
+					float beforeDepth = texture2D(depthMap, prevTexCoords).r - currentLayerDepth + layerDepth;
+					
+					// interpolation of texture coordinates
+					float weight = afterDepth / (afterDepth - beforeDepth);
+					vec2 finalTexCoords = prevTexCoords * weight + currentTexCoords * (1.0 - weight);
+					
+					return finalTexCoords;  
+
+				#elif defined(USE_RELIEF_PARALLAX)
+					for (int i = 0; i < 5; i++) 
+					{
+						deltaTexCoords *= 0.5;
+						layerDepth *= 0.5;
+
+						if(currentLayerDepth < currentDepthMapValue)
+						{
+							currentTexCoords -= deltaTexCoords;
+							currentLayerDepth += layerDepth; 
+						}
+						else
+						{
+							currentTexCoords += deltaTexCoords;
+							currentLayerDepth -= layerDepth; 
+						}
+	
+						// get depthmap value at current texture coordinates
+						currentDepthMapValue = texture2D(depthMap, currentTexCoords).r;  
+					}
+
+					return currentTexCoords; 
+				#endif
+			#endif
+
+		} 
+	</script>
+
+	<script src="http://threejs.org/build/three.min.js"></script>
+		<!--script src="../threejs/three.js"></script-->
+		
+		<script src="utils./BufferGeometryUtils.js"></script>
+		<script src="CameraControl.js"></script>
+		<script src="ParallaxExample.js"></script>
+		<script>window.onload = start</script>
+	</body>
+</html>
